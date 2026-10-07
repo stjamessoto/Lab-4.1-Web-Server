@@ -1,5 +1,7 @@
 # Lab 4.1 – Client-Server Applications in C++
 
+**Santiago Soto · M00121124 · CS 375 Operating Systems**
+
 From a single-threaded echo server to a thread-pool HTTP web server.
 
 | Part | Program | What it shows |
@@ -19,24 +21,25 @@ make                     # builds everything into ./bin
 Requirements: Linux, macOS or WSL with `g++` (C++17), `make`, `curl`, and `telnet` or `nc`.
 On Ubuntu/WSL: `sudo apt install build-essential curl telnet`.
 
-No `make`? Each program is one file plus the shared header:
+Without `make`, each program compiles from one file plus the shared header:
 
 ```bash
 g++ -std=c++17 -pthread -o server src/echo_server.cpp
 ```
 
-## What to submit
+I developed and tested on Ubuntu 22.04.3 LTS (WSL2) with g++ 11.4.0 on a 16-core machine.
 
-| Item | Where | Status |
-|------|-------|--------|
-| Source code | [`src/`](src/) | Done |
-| Web files for Part 4 | [`www/`](www/) | Done |
-| Test scripts | [`scripts/`](scripts/) | Done |
-| Screenshots | [`screenshots/`](screenshots/) | **You** – checklist below |
-| Report | [`report/report.tex`](report/report.tex) → `report/report.pdf` | **You** – written up; add screenshots and fill in the red fields |
+## Submission contents
 
-When the screenshots and report are in place, `make zip` rebuilds the report and creates
-`Lab4.1_submission.zip` with all of the above.
+| Item | Where |
+|------|-------|
+| Source code | [`src/`](src/) |
+| Web files for Part 4 | [`www/`](www/) |
+| Test scripts | [`scripts/`](scripts/) |
+| Screenshots (36) | [`screenshots/`](screenshots/) |
+| Report | [`report/report.pdf`](report/report.pdf), source in [`report/report.tex`](report/report.tex) |
+
+`make zip` rebuilds the report and bundles all of the above into `Lab4.1_submission.zip`.
 
 ## Project layout
 
@@ -52,18 +55,23 @@ www/                         index.html, style.css, subpage.html, logo.png
 scripts/
   test_echo.sh               the 10 sample echo requests
   run_clients.sh             N clients in parallel, prints total time
-  test_http.sh               the 10 sample HTTP requests + traversal attacks
-screenshots/                 put your screenshots here
-report/report.tex            LaTeX report; pulls screenshots in by file name
+  test_http.sh               the 10 sample HTTP requests + 7 traversal/malformed-URL checks
+screenshots/                 test evidence, named by part (p1_ … p4_)
+report/
+  report.tex                 LaTeX report; pulls screenshots in by file name
+  report.pdf                 built report (22 pages)
+Makefile                     make, make report, make zip, make clean
 ```
 
 ## Running each part
 
-Every server takes the port as its first argument (default `8080`). Run servers from the project root.
-Stop a server with **Ctrl+C**. Use two terminals: server in one, tests in the other.
+Every server takes the port as its first argument (default `8080`) and must be started from the
+project root. **Ctrl+C** stops a server. Two terminals are needed: the server in one, the tests in
+the other.
 
 The echo servers accept an optional second argument, `delay_ms`, which simulates slow work per
-client. Without it everything finishes in milliseconds and you cannot see queuing or concurrency.
+client. Without it everything finishes in milliseconds and neither queuing nor concurrency is
+visible.
 
 ### Part 1 – single-threaded echo server
 
@@ -71,9 +79,10 @@ client. Without it everything finishes in milliseconds and you cannot see queuin
 ./bin/echo_server 8080                              # terminal 1
 ./bin/echo_client localhost 8080 "Hello, server!"   # terminal 2
 scripts/test_echo.sh 8080                           # all 10 sample requests
+telnet localhost 8080                               # manual session; quit with Ctrl+] then "quit"
 ```
 
-Queuing test (restart the server with a 2 s delay):
+Queuing test (server restarted with a 2 s delay):
 
 ```bash
 ./bin/echo_server 8080 2000        # terminal 1
@@ -87,7 +96,7 @@ scripts/run_clients.sh 8080 3      # terminal 2 – takes ~6 s, one client at a 
 time scripts/run_clients.sh 8080 10     # terminal 2
 ```
 
-Compare with Part 1 using the same delay (`./bin/echo_server 8080 500`).
+The Part 1 baseline uses the same delay: `./bin/echo_server 8080 500`.
 
 ### Part 3 – thread pool
 
@@ -96,8 +105,18 @@ Compare with Part 1 using the same delay (`./bin/echo_server 8080 500`).
 scripts/run_clients.sh 8080 20        # terminal 2 – 20 clients, 10 workers
 ```
 
-The log prints the queue size on every push and pop. Press Ctrl+C while clients are still
-queued to see the server drain the queue before exiting.
+The log prints the queue size on every push and pop. Pressing Ctrl+C while clients are still
+queued makes the server drain the queue before exiting. To show only the queue lines:
+
+```bash
+./bin/thread_pool_server 8080 500 | grep --line-buffered -E "listening|queue size"
+```
+
+Thread count and memory while clients are connected:
+
+```bash
+ps -o pid,nlwp,rss,pcpu,cmd -p "$(pgrep -f bin/thread_pool_server)"
+```
 
 ### Part 4 – HTTP server
 
@@ -109,28 +128,40 @@ curl -v http://localhost:8080/          # a single request in detail
 
 Browser: <http://localhost:8080/>
 
-> **curl and `..`** – curl silently removes `../` from URLs before sending them. Add
-> `--path-as-is` to send the attack exactly as written:
+A different web root can be given as a second argument: `./bin/http_server 8080 /path/to/www`.
+
+> **curl and `..`** – curl silently removes `../` from URLs before sending them. The
+> `--path-as-is` flag sends the attack exactly as written:
 > `curl -v --path-as-is http://localhost:8080/../../../etc/passwd`
 
 ## Measured results
 
-Measured on the development machine with a 500 ms simulated delay per client:
+Timing, with a 500 ms simulated delay per client:
 
 | Server | Clients | Total time |
 |--------|---------|-----------|
-| Part 1 – single-threaded | 10 | 5.01 s |
-| Part 2 – thread per client | 10 | 0.51 s |
-| Part 3 – pool of 10 | 20 | 1.01 s |
+| Part 1 – single-threaded | 10 | 5.02 s |
+| Part 2 – thread per client | 10 | 0.55 s |
+| Part 3 – pool of 10 | 20 | 1.03 s |
 
-Re-run these yourself for the report; your numbers will be close but not identical.
+Resource use with 20 clients connected (15 s delay), from `ps`:
+
+| Server | Threads (NLWP) | Memory (RSS) | CPU |
+|--------|----------------|--------------|-----|
+| Part 2 – thread per client | 21 | 4348 kB | 0.0 % |
+| Part 3 – pool of 10 | 11 | 4068 kB | 0.0 % |
+
+In Part 3 the queue reached a maximum of 10 waiting clients. In Part 4 all 10 sample requests
+returned the expected status and all 7 traversal and malformed-URL checks passed. The report
+discusses these results.
 
 ## Lab requirements and where they are implemented
 
 **All parts**
 
-- Error handling: invalid/out-of-range ports, port already in use, unresolvable host, refused
-  connection, partial writes, interrupted calls, clients that disconnect early (`common.hpp`).
+- Error handling: invalid/out-of-range ports (reported with the offending value), port already in
+  use, unresolvable host, refused connection, partial writes, interrupted calls, clients that
+  disconnect early (`common.hpp`).
 - Logging: every event has a millisecond timestamp; the logger is mutex-protected so lines from
   different threads never mix (`lab::log`).
 
@@ -139,8 +170,8 @@ Re-run these yourself for the report; your numbers will be close but not identic
 - Multi-line and oversized messages: the server reads in a loop until EOF rather than doing a
   single 1024-byte read (`lab::echo_until_eof`). The client half-closes the socket
   (`shutdown(SHUT_WR)`) to signal the end of its message.
-- The lab's client used `inet_pton`, which cannot resolve the name `localhost`. The client here
-  uses `getaddrinfo`, so `./bin/echo_client localhost 8080 ...` works as the lab sheet shows.
+- The lab's client used `inet_pton`, which cannot resolve the name `localhost`. I replaced it with
+  `getaddrinfo`, so `./bin/echo_client localhost 8080 ...` works as the lab sheet shows.
 
 **Part 2**
 
@@ -159,8 +190,9 @@ Re-run these yourself for the report; your numbers will be close but not identic
 - `get_file_content`: binary-safe file reads; `/` and directories map to `index.html`.
 - `Content-Type` chosen from the file extension (`get_content_type`).
 - Methods: `GET`, `HEAD`, `POST` (echoes the body); anything else gets `405`.
-- Other statuses: `400` malformed request, `404` missing file, `408` slow client, `413` body too
-  large, `431` headers too large.
+- Other statuses: `400` malformed request, `404` missing file, `408` slow client, `413` body over
+  1 MiB, `431` headers over 8 KiB.
+- A 5-second socket timeout stops an idle connection from occupying a worker.
 - Full request (request line, headers, query parameters, body) written to the log.
 
 **Cybersecurity challenge – path traversal** (`resolve_path` in `http_server.cpp`)
@@ -176,60 +208,44 @@ it is also blocked, because the check runs on the resolved path rather than on t
 
 ## Screenshots and report
 
-The report is [`report/report.tex`](report/report.tex). It looks in `screenshots/` for the file
-names below (`.png`, `.jpg` or `.jpeg`) and places each one in the right section. A screenshot
-that is not there yet appears as a red "Missing screenshot" box.
+The report reads its screenshots from `screenshots/` by file name (`.png`, `.jpg` or `.jpeg`),
+so replacing a file and rebuilding updates the PDF. A file the report expects but cannot find
+shows up as a red "Missing screenshot" box.
 
 ```bash
-make report      # builds report/report.pdf and lists the screenshots still missing
+make report      # builds report/report.pdf and lists any screenshots still missing
 ```
 
 Building needs LaTeX: `sudo apt install texlive-latex-recommended texlive-latex-extra`.
 
-Also fill in the red `[ ... ]` fields in the PDF: search `report.tex` for `\fillin` (name,
-environment, the measured times and thread counts, and the closing paragraph).
+For Parts 1–3 the server terminal and the client terminal were captured separately. Where a test
+has two files, the plain name is the server side and `_2` is the client side.
 
-**How to capture**
-
-- Put Terminal 1 (server) on the left and Terminal 2 (client) on the right.
-- Run `clear` in both before each test so only that test is on screen.
-- "Both" below means one screenshot covering both terminals.
-- Windows + WSL: `Win+Shift+S` to capture; `explorer.exe screenshots` opens the folder to save into.
-
-| Save as (in `screenshots/`) | Capture | Must be visible |
-|---|---|---|
-| `p1_requests` | Both | The `test_echo.sh` output down to "All 10 requests echoed back correctly", and the server log |
-| `p1_requests_2` (optional) | Both | The rest, if it did not fit in one screenshot |
-| `p1_telnet` | Both | The lines you typed in telnet echoed back; "received" lines in the server log |
-| `p1_queuing` | Both | Server log timestamps about 2 s apart; "All 3 clients finished in 6.0 seconds" |
-| `p1_errors` | Both | The two usage errors (Terminal 1) and "Connection refused" (Terminal 2) |
-| `p2_concurrent` | Both | Interleaved client lines and the "total connections / active threads" counters |
-| `p2_timing_part1` | Terminal 2 | The `time` output (`real` about 5 s) against `echo_server` |
-| `p2_timing_part2` | Terminal 2 | The `time` output (`real` about 0.5 s) against `multi_threaded_server` |
-| `p3_queue` | Terminal 1 | "queued ... (queue size: N)" rising to 10, then "dequeued" lines |
-| `p3_shutdown` | Terminal 1 | "Shutdown requested: draining N queued client(s)" through "Shutdown complete" |
-| `p3_top_pool` | Terminal 3 | `ps` / `top -H` for `thread_pool_server` (NLWP 11) |
-| `p3_top_threads` | Terminal 3 | `ps` / `top -H` for `multi_threaded_server` (NLWP about 21) |
-| `p4_browser_index` | Browser | Address bar, heading, grey background (CSS loaded), logo |
-| `p4_browser_subpage` | Browser | Address bar showing `/subpage.html` |
-| `p4_browser_404` | Browser | Address bar showing `/missing.txt` and "404 Not Found" |
-| `p4_tests` | Terminal 2 | The whole `test_http.sh` table down to "All checks passed." |
-| `p4_curl_index` | Terminal 2 | `curl -v /`: the `>` request lines, `< HTTP/1.1 200 OK`, the HTML |
-| `p4_curl_css` | Terminal 2 | `< Content-Type: text/css` |
-| `p4_curl_png` | Terminal 2 | `< Content-Type: image/png` |
-| `p4_curl_404` | Terminal 2 | `< HTTP/1.1 404 Not Found` for `/missing.txt` |
-| `p4_traversal` | Terminal 2 | Both traversal curl commands and their `404 Not Found` |
-| `p4_traversal_log` | Terminal 1 | The `SECURITY: blocked path traversal attempt` lines |
-
-Optional extra curl screenshots, included only if present: `p4_curl_indexhtml`,
-`p4_curl_subpage`, `p4_curl_favicon`, `p4_curl_dotdot`, `p4_curl_query`, `p4_curl_longpath`.
+| File(s) in `screenshots/` | Shows |
+|---|---|
+| `p1_requests`, `p1_requests_2` | The 10 sample echo requests: server log and client output |
+| `p1_telnet`, `p1_telnet_2` | Manual telnet session |
+| `p1_queuing`, `p1_queuing_2` | 3 simultaneous clients served 2 s apart; 6.0 s in total |
+| `p1_errors`, `p1_errors_2` | Invalid port, out-of-range port, connection refused |
+| `p2_concurrent` | 10 parallel clients, interleaved log, connection and thread counters |
+| `p2_timing_part1`, `p2_timing_part2` | `time` for 10 clients against Part 1 and Part 2 |
+| `p3_queue_sizes` | Queue lines only: size rising to 10, then falling to 0 |
+| `p3_queue`, `p3_queue_2`, `p3_queue_time` | Full server log, client output and total time for 20 clients |
+| `p3_shutdown` | Ctrl+C with a client still queued; queue drained before exit |
+| `p3_top_threads`, `p3_top_pool` | `ps` output under load for Part 2 and Part 3 |
+| `p4_browser_index`, `p4_browser_subpage`, `p4_browser_404` | Pages in the browser |
+| `p4_browser_log` | Server log of the browser's requests, handled by several workers |
+| `p4_tests` | `test_http.sh` table: all 17 checks passed |
+| `p4_curl_index`, `p4_curl_indexhtml`, `p4_curl_css`, `p4_curl_png`, `p4_curl_subpage`, `p4_curl_404`, `p4_curl_favicon`, `p4_curl_dotdot`, `p4_curl_query`, `p4_curl_longpath` | `curl -v` for each of the 10 sample requests |
+| `p4_traversal`, `p4_traversal_2` | Traversal attempts, plain and percent-encoded: both `404` |
+| `p4_traversal_log` | The `SECURITY: blocked path traversal attempt` log lines |
 
 ## Troubleshooting
 
 | Message | Fix |
 |---------|-----|
-| `bind: cannot use port 8080: Address already in use` | Another server is still running. Stop it with Ctrl+C or `pkill -f bin/`, or use another port. |
+| `bind: cannot use port 8080: Address already in use` | Another server is still running. Stop it with Ctrl+C, or use another port. |
 | `connect ... failed: Connection refused` | The server is not running, or the port does not match. |
-| `Web root './www' is not a directory` | Start `http_server` from the project root. |
+| `Web root './www' is not a directory` | Start `http_server` from the project root, or pass the directory as the second argument. |
 | `telnet: command not found` | `sudo apt install telnet`, or use `nc localhost 8080`. |
 | Browser cannot reach the page from Windows (WSL) | Use `http://localhost:8080/`; if that fails, run `hostname -I` in WSL and use that address. |
