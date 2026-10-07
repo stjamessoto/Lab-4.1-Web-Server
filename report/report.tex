@@ -1,0 +1,526 @@
+% Lab 4.1 report.
+%
+% HOW TO USE
+%   1. Save your screenshots into ../screenshots/ using the file names shown
+%      in the red placeholder boxes (.png, .jpg or .jpeg all work).
+%   2. Fill in everything printed in red (search this file for \fillin).
+%   3. Build with `make report` from the project root -> report/report.pdf
+%
+% A screenshot that is not there yet shows up as a red placeholder box, so
+% the document always compiles and you can see what is still missing.
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{graphicx}
+\usepackage[export]{adjustbox}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage{listings}
+\usepackage[hidelinks]{hyperref}
+
+% ---------------------------------------------------------------- details
+\newcommand{\studentname}{Santiago Soto}
+\newcommand{\studentid}{M00121124}
+\newcommand{\course}{CS 375 Operating Systems}
+
+% ----------------------------------------------------------------- macros
+\newcommand{\shotdir}{../screenshots/}
+
+\newcommand{\fillin}[1]{\textcolor{black}{[\,#1\,]}}
+
+% Never enlarged beyond its natural size, so small captures stay sharp.
+\newcommand{\shotimage}[1]{%
+  \includegraphics[max width=\linewidth,max height=0.40\textheight]{#1}}
+
+\newcommand{\shotfigure}[2]{%
+  \begin{figure}[H]\centering #1\caption{#2}\end{figure}}
+
+% \shot{file-name-without-extension}{caption}
+% Includes the screenshot if it exists, otherwise a placeholder box.
+\newcommand{\shot}[2]{%
+  \IfFileExists{\shotdir#1.png}{\shotfigure{\shotimage{\shotdir#1.png}}{#2}}{%
+  \IfFileExists{\shotdir#1.jpg}{\shotfigure{\shotimage{\shotdir#1.jpg}}{#2}}{%
+  \IfFileExists{\shotdir#1.jpeg}{\shotfigure{\shotimage{\shotdir#1.jpeg}}{#2}}{%
+  \typeout{MISSING-SHOT #1}\shotfigure{\fbox{\parbox[c][3.2cm][c]{0.9\linewidth}{\centering\color{red}%
+    Missing screenshot\\[4pt]\texttt{screenshots/\detokenize{#1}.png}}}}{#2}}}}}
+
+% \shotopt{file}{caption}: same, but silently skipped when the file is absent.
+\newcommand{\shotopt}[2]{%
+  \IfFileExists{\shotdir#1.png}{\shotfigure{\shotimage{\shotdir#1.png}}{#2}}{%
+  \IfFileExists{\shotdir#1.jpg}{\shotfigure{\shotimage{\shotdir#1.jpg}}{#2}}{%
+  \IfFileExists{\shotdir#1.jpeg}{\shotfigure{\shotimage{\shotdir#1.jpeg}}{#2}}{}}}}
+
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+
+\lstset{
+  language=C++,
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{blue!60!black},
+  commentstyle=\color{green!40!black},
+  stringstyle=\color{red!60!black},
+  frame=single,
+  breaklines=true,
+  columns=fullflexible,
+  showstringspaces=false,
+}
+
+\title{Lab 4.1\\Client-Server Applications in C++:\\From Echo Server to Simple Web Server}
+\author{\studentname\\\studentid\\\course}
+\date{\today}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+% =========================================================================
+\section{Overview}
+
+This lab builds a network server in four steps. Each step keeps the previous
+one's socket code and changes only how clients are scheduled:
+
+\begin{center}
+\begin{tabular}{@{}cll@{}}
+\toprule
+Part & Program & Concurrency model \\
+\midrule
+1 & \code{echo_server} & One client at a time \\
+2 & \code{multi_threaded_server} & One thread per client \\
+3 & \code{thread_pool_server} & Fixed pool of 10 workers and a task queue \\
+4 & \code{http_server} & The Part 3 pool, serving HTTP instead of echo \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Code shared by every program (socket setup, logging, argument validation and
+error handling) lives in \code{src/common.hpp}, so each part's source file
+contains only what is new in that part.
+
+\paragraph{Environment.}
+Ubuntu 22.04.3 LTS on WSL2, g++ 11.4.0, 16 CPU cores. Built with
+\code{g++ -std=c++17 -Wall -Wextra -O2 -pthread}.
+
+\paragraph{Requirements common to all parts.}
+\begin{itemize}
+  \item \textbf{Error handling.} Ports are validated (whole number, 1--65535).
+        Failures of \code{socket}, \code{bind}, \code{listen}, \code{accept}
+        and \code{connect} are reported with the reason; a port that is
+        already in use and a refused connection each get a specific hint.
+        Partial writes, interrupted system calls and clients that disconnect
+        early are handled without crashing the server.
+  \item \textbf{Logging.} Every event is written to the console with a
+        millisecond timestamp. The logger holds a mutex, so lines from
+        different threads never mix inside a line.
+  \item \textbf{Simulated work.} The echo servers take an optional
+        \code{delay_ms} argument. Echoing a few bytes takes microseconds,
+        which makes queuing and concurrency invisible; the delay stands in
+        for real work so the difference between the designs can be measured.
+\end{itemize}
+
+% =========================================================================
+\section{Part 1: Simple Echo Server}
+
+The server accepts a client, echoes whatever it sends, closes the connection
+and only then accepts the next client.
+
+\subsection{Ten sample requests}
+
+The script \code{scripts/test_echo.sh} sends ten messages and compares each
+echo with what was sent.
+
+\begin{center}
+\begin{tabular}{@{}rll@{}}
+\toprule
+\# & Request & Result \\
+\midrule
+1 & Plain message & Echoed correctly (25 bytes) \\
+2 & Longer sentence & Echoed correctly (74 bytes) \\
+3 & Empty string & Handled; 0 bytes sent and received \\
+4 & 3000 bytes (larger than the 1024-byte buffer) & Echoed correctly in 3 chunks \\
+5 & Multi-line message & Echoed correctly (39 bytes) \\
+6 & Special characters & Echoed correctly (46 bytes) \\
+7 & Unicode (multi-byte characters) & Echoed correctly (48 bytes) \\
+8 & Digits & Echoed correctly (21 bytes) \\
+9 & Exactly 1024 bytes & Echoed correctly in 1 chunk \\
+10 & Final message & Echoed correctly (20 bytes) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\shot{p1_requests}{Part 1, server (\texttt{./bin/echo\_server 8080}): log of the ten sample requests.}
+\shotopt{p1_requests_2}{Part 1, client (\texttt{scripts/test\_echo.sh 8080}): each echo matches what was sent.}
+\shot{p1_telnet}{Part 1, server: the line received from the telnet session.}
+\shotopt{p1_telnet_2}{Part 1, client (\texttt{telnet localhost 8080}): the typed line is echoed back.}
+
+\subsection{Extension: multi-line and long messages}
+
+The starting code called \code{read} once with a 1024-byte buffer. TCP is a
+byte stream, not a sequence of messages: one \code{read} returns whatever has
+arrived so far, so anything beyond the first 1024 bytes was never echoed. The
+server now reads in a loop and echoes each chunk until \code{read} returns 0
+(end of file). The server log for request 4 shows the 3000-byte message
+arriving as several chunks.
+
+The client marks the end of its message by half-closing the connection with
+\code{shutdown(fd, SHUT_WR)}. That delivers end-of-file to the server while
+leaving the other direction open for the echo.
+
+The starting client also converted the host with \code{inet_pton}, which
+accepts only numeric addresses, so \code{./client localhost 8080 ...} could
+not work as written. The client uses \code{getaddrinfo} instead, which
+resolves names as well as addresses.
+
+\subsection{Queuing}
+
+With a 2000\,ms delay per client, three clients were started at the same
+moment.
+
+\shot{p1_queuing}{Part 1, server (\texttt{./bin/echo\_server 8080 2000}): three simultaneous clients are served one after another, two seconds apart.}
+\shotopt{p1_queuing_2}{Part 1, client (\texttt{scripts/run\_clients.sh 8080 3}): total time for the three clients.}
+
+All three connections are established immediately, because the kernel
+completes the TCP handshake and holds finished connections in the listen
+backlog. The server, however, is busy with the first client and does not call
+\code{accept} again until it is done. The timestamps show the clients being
+served about two seconds apart, for a total of 6.0\,s.
+One slow client therefore delays everyone behind it.
+
+\subsection{Error handling}
+
+\shot{p1_errors}{Server started with an invalid port (\texttt{abc}) and an out-of-range port (\texttt{99999}).}
+\shotopt{p1_errors_2}{Client run while no server is listening: connection refused.}
+
+% =========================================================================
+\section{Part 2: Multi-Threaded Echo Server}
+
+The main thread now only accepts connections. Each client is handed to a new
+detached \code{pthread}, so a slow client no longer blocks the others.
+
+\subsection{Concurrent requests}
+
+\shot{p2_concurrent}{Part 2, server: ten parallel clients. The log lines of different clients interleave.}
+\shotopt{p2_concurrent_2}{Part 2, client: output of the ten parallel clients.}
+
+In Part 1 every client's ``connected / received / disconnected'' lines
+appeared as one block. Here all ten clients connect within a few milliseconds
+and their lines are interleaved, which shows that they are being served at
+the same time.
+
+\subsection{Performance compared with Part 1}
+
+Ten clients, 500\,ms of simulated work per client:
+
+\begin{center}
+\begin{tabular}{@{}lrr@{}}
+\toprule
+Server & Clients & Total time \\
+\midrule
+Part 1, single-threaded & 10 & 5.02\,s \\
+Part 2, thread per client & 10 & 0.55\,s \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\shot{p2_timing_part1}{Part 1 under the timing test.}
+\shot{p2_timing_part2}{Part 2 under the same test.}
+
+Part 1 takes roughly $10 \times 0.5$\,s because the delays add up. In Part 2
+the ten delays overlap, so the total is close to a single delay: about nine
+times faster for the same work.
+
+\subsection{Shared connection counter}
+
+The total number of connections and the number of active threads are shared
+by all threads and protected by a \code{pthread_mutex_t}. An increment is a
+read, an add and a write; without the mutex two threads can read the same old
+value and one update is lost. The lock makes the three steps indivisible.
+
+\subsection{Discussion: thread creation overhead}
+
+Each connection pays for creating and destroying a thread, and each live
+thread reserves its own stack (8\,MiB of address space by default on Linux)
+and adds scheduling work. For ten clients this is negligible. The danger is
+that the number of threads is decided by the clients, not the server: several
+thousand simultaneous connections would exhaust memory or the thread limit,
+\code{pthread_create} would fail, and a client can cause this deliberately as
+a denial-of-service attack.
+
+Two measures are implemented. The return value of \code{pthread_create} is
+checked and the connection is closed cleanly if it fails, and the server
+refuses new clients once 200 threads are active (\code{MAX_THREADS}) rather
+than growing without bound. Part 3 removes the problem at its source.
+
+% =========================================================================
+\section{Part 3: Thread-Pool Echo Server}
+
+Ten worker threads are created once at start-up. The main thread accepts a
+connection and pushes it onto a \code{std::queue}; a worker pops it and
+serves it. The number of threads no longer depends on the number of clients.
+
+\subsection{Queuing under load}
+
+Twenty clients were launched against the ten workers, with message sizes
+varying from 20 bytes to several kilobytes.
+
+\shot{p3_queue_sizes}{Part 3, server, queue lines only: clients 11--20 are queued while all ten workers are busy, then dequeued as workers become free.}
+\shotopt{p3_queue}{Part 3, server, full log: the last clients leave the queue and the second batch is served by the same ten workers about 500\,ms after the first.}
+\shotopt{p3_queue_2}{Part 3, client (\texttt{scripts/run\_clients.sh 8080 20}): all twenty echoes match.}
+\shotopt{p3_queue_time}{Part 3, client: total time for the twenty clients.}
+
+The first ten clients are picked up immediately. The next ten wait and the
+logged queue size climbs to 10. As
+workers finish they dequeue the waiting clients and the size falls back to
+zero. Twenty clients took 1.03\,s: two rounds of ten at 500\,ms each.
+
+\subsection{Synchronisation}
+
+The mutex protects the queue, which the main thread and all workers modify.
+The condition variable lets idle workers sleep until there is work: the main
+thread calls \code{notify_one} after each push, waking exactly one worker.
+Without it the workers would have to poll the queue in a loop and burn CPU
+while idle. The wait uses a predicate (queue not empty, or pool stopping), so
+spurious wake-ups are harmless.
+
+\subsection{Graceful shutdown}
+
+\shot{p3_shutdown}{Part 3, server: Ctrl+C while clients are still being served. Work already accepted is finished before the server exits.}
+\shotopt{p3_shutdown_2}{Part 3, server: shutdown, continued.}
+
+A \code{SIGINT}/\code{SIGTERM} handler only sets a flag. The handler is
+installed without \code{SA_RESTART}, so the blocked \code{accept} returns
+\code{EINTR} and the main loop sees the flag. The signals are blocked while
+the workers are created, which guarantees delivery to the main thread. The
+server then stops accepting, sets \code{stop_pool}, wakes every worker and
+joins them. A worker exits only when the pool is stopping \emph{and} the
+queue is empty, so every client that was already accepted is still served;
+the screenshot shows the queue being drained before ``Shutdown complete''.
+
+\subsection{Resource use compared with Part 2}
+
+Both servers were given twenty clients with a 15\,000\,ms delay and inspected
+with \code{ps} while the clients were connected.
+
+\begin{center}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+Server & Clients & Threads (NLWP) & Memory (RSS) & CPU \\
+\midrule
+Part 2, thread per client & 20 & 21 & 4348\,kB & 0.0\,\% \\
+Part 3, pool of 10 & 20 & 11 & 4068\,kB & 0.0\,\% \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\shot{p3_top_threads}{Part 2 under load: 21 threads, one per connected client plus the main thread.}
+\shot{p3_top_pool}{Part 3 under load: 11 threads, the same as when idle.}
+
+Part 2's thread count follows the number of clients, while Part 3 stays at
+eleven (ten workers and the main thread) regardless of load. CPU use is zero
+in both because the threads are asleep in the simulated delay, and resident
+memory differs by only 280\,kB: a thread's stack is reserved address space
+that costs real memory only once it is used, and these threads do very little.
+At twenty clients the difference is therefore small. What matters is how it
+grows: Part 2 adds a thread for every further client without limit, and Part 3
+adds none. The price is
+latency: when all workers are busy, a new client waits in the queue. That is
+the better failure mode, because an overloaded pool becomes slower while an
+overloaded thread-per-client server runs out of resources.
+
+% =========================================================================
+\section{Part 4: Simple HTTP Web Server}
+
+The Part 3 pool is reused unchanged; the workers now parse an HTTP request
+and send a file from \code{./www}.
+
+\subsection{Request parsing and response}
+
+\code{parse_request} reads until the blank line that ends the headers (a
+request may arrive in several pieces), then:
+\begin{itemize}
+  \item checks that the request line is exactly \emph{method, target,
+        version}, with an \code{HTTP/1.x} version and a target starting with
+        \code{/};
+  \item parses the headers into a map with lower-cased names;
+  \item splits the target into path and query string, percent-decodes the
+        path (\code{\%20} becomes a space) and parses the query parameters;
+  \item reads a POST body of exactly \code{Content-Length} bytes.
+\end{itemize}
+\code{GET} and \code{HEAD} serve files, \code{POST} echoes the body it
+received, and any other method is answered with \code{405}. Malformed
+requests receive \code{400}, oversized headers \code{431}, oversized bodies
+\code{413} and clients that stall \code{408}. A five-second socket timeout
+stops an idle connection from occupying a worker indefinitely. The full
+request (request line, headers, query parameters and body) is written to the
+log.
+
+Files are read in binary mode so that images are not altered, and the
+response carries the exact \code{Content-Length}. The \code{Content-Type} is
+chosen from the file extension. This matters in practice: a browser will not
+apply a stylesheet that is not served as \code{text/css}, and needs
+\code{image/png} to render the logo.
+
+\subsection{Ten sample requests}
+
+\begin{center}
+\begin{tabular}{@{}rllll@{}}
+\toprule
+\# & Request & Expected & Status & Content-Type \\
+\midrule
+1 & \code{/} & 200 & 200 & text/html \\
+2 & \code{/index.html} & 200 & 200 & text/html \\
+3 & \code{/style.css} & 200 & 200 & text/css \\
+4 & \code{/logo.png} & 200 & 200 & image/png \\
+5 & \code{/subpage.html} & 200 & 200 & text/html \\
+6 & \code{/missing.txt} & 404 & 404 & text/html (error page) \\
+7 & \code{/favicon.ico} & 404 & 404 & text/html (error page) \\
+8 & \code{/..} & 404 & 404 & text/html (error page) \\
+9 & \code{/?test=1} & 200 & 200 & text/html \\
+10 & \code{/very/long/path/to/file.html} & 404 & 404 & text/html (error page) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\shot{p4_tests}{Part 4: all sample requests and traversal attacks, with status, type and size.}
+
+\subsection{Browser}
+
+\shot{p4_browser_index}{The index page with its stylesheet and logo applied.}
+\shot{p4_browser_subpage}{The subpage.}
+\shot{p4_browser_404}{The 404 page for the missing link.}
+\shotopt{p4_browser_log}{Server log while the browser loads the index page: full requests are logged and handled by several workers.}
+
+Loading the index page makes the browser send several requests at once (the
+page, the stylesheet, the logo and a favicon), which the server log shows
+being handled by different workers.
+
+\subsection{curl}
+
+\shot{p4_curl_index}{\texttt{curl -v /}: request and response headers, then the HTML.}
+\shot{p4_curl_css}{\texttt{curl -v /style.css}: served as \texttt{text/css}.}
+\shot{p4_curl_png}{\texttt{curl -v /logo.png}: served as \texttt{image/png}.}
+\shot{p4_curl_404}{\texttt{curl -v /missing.txt}: 404 Not Found.}
+\shotopt{p4_curl_indexhtml}{\texttt{curl -v /index.html}.}
+\shotopt{p4_curl_subpage}{\texttt{curl -v /subpage.html}.}
+\shotopt{p4_curl_favicon}{\texttt{curl -v /favicon.ico}: 404 Not Found.}
+\shotopt{p4_curl_dotdot}{\texttt{curl -v --path-as-is /..}: 404 Not Found.}
+\shotopt{p4_curl_query}{\texttt{curl -v /?test=1}: the query string is parsed and the index page is served.}
+\shotopt{p4_curl_longpath}{\texttt{curl -v /very/long/path/to/file.html}: 404 Not Found.}
+
+% =========================================================================
+\section{Cybersecurity Challenge: Path Traversal}
+
+\subsection{The attack}
+
+The server builds a file name by appending the URL path to the web root. A
+path containing \code{../} walks back out of that directory:
+\code{./www/../../../etc/passwd} is \code{/etc/passwd}. The starting code
+rejected any path containing ``\code{..}'', but it ran that check on the raw
+URL. In \code{/../\%2e\%2e/\%2e\%2e/etc/passwd} the dots are written as
+\code{\%2e}, so a check for the two characters ``\code{..}'' finds nothing in
+the encoded segments, and they turn into \code{..} only when the path is
+decoded later. More generally, searching for known-bad strings is fragile:
+it has to anticipate every encoding, and it cannot detect a symbolic link
+inside the web root that points outside it, which involves no ``\code{..}''
+at all.
+
+\subsection{The defence}
+
+Instead of looking for bad input, the server works out where the request
+really leads and checks the result:
+
+\begin{enumerate}
+  \item \textbf{Decode once, first.} The path is percent-decoded before any
+        check, so every later step sees what the file system will see.
+        Malformed escapes and \code{\%00} are rejected with \code{400}.
+  \item \textbf{Canonicalise.} \code{std::filesystem::weakly_canonical} turns
+        the path into an absolute one with \code{.}, \code{..} and symbolic
+        links resolved.
+  \item \textbf{Verify containment.} The resolved path must lie inside the
+        canonical web root, compared component by component. A plain string
+        prefix test would be wrong here: it would accept the directory
+        \code{/srv/www-secret} as being inside \code{/srv/www}.
+\end{enumerate}
+
+\begin{lstlisting}
+fs::path resolved = fs::weakly_canonical(
+    g_web_root / fs::path(url_path).relative_path(), ec);
+if (ec) return std::nullopt;
+
+auto mismatch = std::mismatch(g_web_root.begin(), g_web_root.end(),
+                              resolved.begin(), resolved.end());
+if (mismatch.first != g_web_root.end()) {
+    lab::log("SECURITY: blocked path traversal attempt: ...");
+    return std::nullopt;   // answered with 404
+}
+\end{lstlisting}
+
+\subsection{Test}
+
+\shot{p4_traversal}{Traversal attempt with plain \texttt{../} segments: 404 Not Found.}
+\shotopt{p4_traversal_2}{Traversal attempt with percent-encoded dots (\texttt{\%2e\%2e}): 404 Not Found.}
+\shot{p4_traversal_log}{The server log records each blocked attempt and where it would have led.}
+
+curl needs \code{--path-as-is} for this test. By default it removes
+\code{../} segments from the URL before sending, so without the flag the
+attack never reaches the server and the test proves nothing.
+
+The server answers \code{404} rather than \code{403}, so the response does
+not reveal whether the target exists. The script \code{scripts/test_http.sh}
+additionally tests encoded slashes (\code{..\%2f}), a path that starts inside
+the root and then climbs out, a NUL byte and a malformed escape.
+All seven cases passed: the five traversal attempts returned \code{404} and
+the two malformed URLs returned \code{400}.
+
+\subsection{Why this matters}
+
+A traversal flaw lets anyone who can reach the server read any file the
+server process can read: \code{/etc/passwd}, application source code,
+configuration files, database passwords, API keys and private keys. Leaked
+credentials usually turn an information leak into a full compromise. The
+attack needs no authentication and nothing more than a URL, so it is easy to
+automate and is scanned for constantly.
+
+Path traversal is CWE-22 and belongs to \textbf{A01: Broken Access Control},
+the first category of the OWASP Top 10 (2021): the server fails to enforce
+the rule that clients may only read files inside the web root. The general
+lessons are to validate the outcome rather than the input text, to normalise
+data before checking it, and to run the server with as few file permissions
+as possible so that a mistake exposes less.
+
+% =========================================================================
+\section{Conclusion}
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Design & Strength & Weakness \\
+\midrule
+Single-threaded & Simplest; no shared state & One slow client blocks all others \\
+Thread per client & Clients fully concurrent & Thread count set by the clients \\
+Thread pool & Bounded resources & Clients wait when the pool is busy \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The measurements match the designs. With 500\,ms of work per client, the
+single-threaded server needed 5.02\,s for ten clients because every client
+waited for all the ones ahead of it. One thread per client brought that down
+to 0.55\,s, and the pool of ten served twenty clients in 1.03\,s while using
+11 threads where the thread-per-client server needed 21.
+
+For a real server I would choose the thread pool. It gives nearly all of the
+concurrency of one thread per client, but its resource use is decided by the
+server rather than by whoever connects to it, and under overload it slows down
+instead of failing. The pool size and the queue then become the two settings
+to tune for the workload.
+
+The security exercise showed that the networking code was the easy part.
+The original traversal check looked reasonable and was still bypassed by
+encoding two characters. Checking where a request actually ends up, rather
+than what its text looks like, is the approach I would reuse elsewhere.
+
+\end{document}
